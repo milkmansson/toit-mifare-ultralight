@@ -3,3 +3,5 @@ description: MIFARE Ultralight/NTAG cards (pages, password authentication, count
 dependencies:
   nfc:
     path: ../toit-nfc
+  des:
+    path: ../toit-des

@@ -3,11 +3,16 @@
 // be found in the TESTS_LICENSE file.
 
 import expect show *
-import mifare-ultralight show UltralightVersion UltralightException
+import des show TripleDes cbc-encrypt cbc-decrypt
+import nfc.reader show Target
+import mifare-ultralight show UltralightCard UltralightVersion UltralightException
 
 main:
   test-version-decoding
   test-exception-decoding
+  test-ultralight-c-authentication-succeeds --include-status-byte=false
+  test-ultralight-c-authentication-succeeds --include-status-byte=true
+  test-ultralight-c-authentication-fails-with-wrong-key
 
 test-version-decoding:
   // Mirrors the example GET_VERSION response documented for the NTAG213
@@ -55,3 +60,57 @@ test-exception-decoding:
   expect-equals
       UltralightException.INVALID-ERROR-RESPONSE
       (UltralightException.from-response #[0x00, 0x01]).code
+
+/**
+Plays the tag side of Ultralight C's 3DES mutual authentication, so
+  $UltralightCard.authenticate-ultralight-c can be tested without real
+  hardware — the same technique toit-mifare-classic's crypto1-test.toit
+  uses (simulate both sides of the handshake with the same key).
+*/
+class FakeUltralightCTarget implements Target:
+  key_/ByteArray
+  include-status-byte_/bool
+  rnd-b_/ByteArray? := null
+  step1-ciphertext_/ByteArray? := null
+
+  constructor .key_ --include-status-byte/bool:
+    include-status-byte_ = include-status-byte
+
+  uid -> ByteArray: return #[0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+  type -> int: return 0
+  close -> none:
+
+  transceive bytes/ByteArray --check-crc/bool=false -> ByteArray?:
+    cipher := TripleDes --key=key_
+
+    if bytes.size == 2 and bytes[0] == 0x1A:
+      rnd-b_ = ByteArray 8: random 0x100
+      step1-ciphertext_ = cbc-encrypt cipher rnd-b_
+      return #[0xAF] + step1-ciphertext_
+
+    if bytes.size == 17 and bytes[0] == 0xAF:
+      ciphertext := bytes[1..]
+      plain := cbc-decrypt cipher ciphertext --iv=step1-ciphertext_
+      rnd-a := plain[..8]
+      received-rnd-b-rotated := plain[8..]
+      expected-rnd-b-rotated := rnd-b_[1..] + rnd-b_[..1]
+      if received-rnd-b-rotated != expected-rnd-b-rotated: return null
+
+      rnd-a-rotated := rnd-a[1..] + rnd-a[..1]
+      encrypted := cbc-encrypt cipher rnd-a-rotated --iv=ciphertext[8..16]
+      return include-status-byte_ ? #[0x00] + encrypted : encrypted
+
+    return null
+
+test-ultralight-c-authentication-succeeds --include-status-byte/bool:
+  key := #[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+  target := FakeUltralightCTarget key --include-status-byte=include-status-byte
+  card := UltralightCard target
+  expect (card.authenticate-ultralight-c --key=key)
+
+test-ultralight-c-authentication-fails-with-wrong-key:
+  key := #[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+  wrong-key := #[9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9]
+  target := FakeUltralightCTarget key --include-status-byte=false
+  card := UltralightCard target
+  expect-not (card.authenticate-ultralight-c --key=wrong-key)

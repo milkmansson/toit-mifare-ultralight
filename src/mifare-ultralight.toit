@@ -2,6 +2,7 @@
 // Use of this source code is governed by an MIT-style license that can be
 // found in the LICENSE file.
 
+import des show TripleDes cbc-encrypt cbc-decrypt
 import nfc.reader show Target
 
 /**
@@ -9,11 +10,10 @@ A MIFARE Ultralight or NTAG21x card, built on top of a $Target from any
   toit-nfc reader.
 
 Unlike MIFARE Classic, none of this needs raw-frame access: page reads,
-  page writes, password authentication, and the version/counter/signature
-  commands are all plain command/response exchanges over
-  $Target.transceive, so this works on any reader (including the PN532,
-  which can't do MIFARE Classic Crypto1 at all through this family of
-  packages).
+  page writes, and all the authentication/version/counter/signature
+  commands are plain command/response exchanges over $Target.transceive,
+  so this works on any reader (including the PN532, which can't do
+  MIFARE Classic Crypto1 at all through this family of packages).
 
 Covers the plain command set shared by MIFARE Ultralight, Ultralight C,
   Ultralight EV1, and NTAG213/215/216 (collectively "the Ultralight
@@ -21,16 +21,14 @@ Covers the plain command set shared by MIFARE Ultralight, Ultralight C,
   AUTH0/ACCESS/CFG0/CFG1, which differ per model and memory size) is out
   of scope here; $get-version plus the model's datasheet is how a caller
   would find those.
-
-Ultralight C's authentication (3DES, not password-based) is not
-  implemented: the Toit SDK's `crypto` library has no 3DES, and bringing
-  one in is its own piece of work.
 */
 class UltralightCard:
   static READ_ ::= 0x30
   static WRITE_ ::= 0xA2
   static FAST-READ_ ::= 0x3A
   static PWD-AUTH_ ::= 0x1B
+  static AUTHENTICATE-1_ ::= 0x1A
+  static AUTHENTICATE-2_ ::= 0xAF
   static GET-VERSION_ ::= 0x60
   static READ-SIG_ ::= 0x3C
   static READ-CNT_ ::= 0x39
@@ -98,6 +96,53 @@ class UltralightCard:
   authenticate --password/ByteArray -> ByteArray?:
     if password.size != 4: throw "INVALID_ARGUMENT"
     return target.transceive (#[PWD-AUTH_] + password) --check-crc
+
+  /**
+  Authenticates with an Ultralight C card, using its 3DES mutual
+    authentication (an ISO/IEC 11770-2 three-pass exchange).
+
+  $key must be 16 bytes (2-key 3DES, which is the keying Ultralight C
+    uses). Returns whether authentication succeeded.
+
+  The exact byte-level framing of the second step's response (whether it
+    carries a leading status byte before the 8-byte encrypted nonce) has
+    not been checked against a real card or the datasheet text in this
+    session — see this package's README — so this accepts either shape
+    rather than committing to one.
+  */
+  authenticate-ultralight-c --key/ByteArray -> bool:
+    if key.size != 16: throw "INVALID_ARGUMENT"
+    cipher := TripleDes --key=key
+
+    step1 := target.transceive #[AUTHENTICATE-1_, 0x00] --check-crc
+    if not step1 or step1.size != 9 or step1[0] != 0xAF: return false
+    encrypted-rnd-b := step1[1..9]
+    rnd-b := cbc-decrypt cipher encrypted-rnd-b
+
+    rnd-a := ByteArray 8: random 0x100
+    rnd-b-rotated := rnd-b[1..] + rnd-b[..1]
+
+    // Continues the CBC chain: this step's IV is the previous step's
+    // ciphertext.
+    plain := rnd-a + rnd-b-rotated
+    encrypted := cbc-encrypt cipher plain --iv=encrypted-rnd-b
+
+    step2 := target.transceive (#[AUTHENTICATE-2_] + encrypted) --check-crc
+    if not step2: return false
+
+    // The card should return Ek(RndA'). Accept either an 8-byte raw
+    // response or a 9-byte one with a leading 0x00 status byte; see the
+    // doc comment above.
+    encrypted-rnd-a-rotated/ByteArray := ?
+    if step2.size == 9 and step2[0] == 0x00:
+      encrypted-rnd-a-rotated = step2[1..9]
+    else:
+      encrypted-rnd-a-rotated = step2
+    if encrypted-rnd-a-rotated.size != 8: return false
+
+    rnd-a-rotated := cbc-decrypt cipher encrypted-rnd-a-rotated --iv=encrypted[8..16]
+    expected-rnd-a-rotated := rnd-a[1..] + rnd-a[..1]
+    return rnd-a-rotated == expected-rnd-a-rotated
 
   /**
   Reads the card's version information (chip type, sub-type, memory size).
