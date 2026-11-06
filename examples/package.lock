@@ -1,0 +1,9 @@
+prefixes:
+  mifare-ultralight: toit-mifare-ultralight
+packages:
+  toit-mifare-ultralight:
+    path: ..
+    prefixes:
+      nfc: toit-nfc
+  toit-nfc:
+    path: ../../toit-nfc

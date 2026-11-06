@@ -1,0 +1,5 @@
+name: mifare-ultralight
+description: MIFARE Ultralight/NTAG cards (pages, password authentication, counters, version/signature) on top of the toit-nfc Reader/Target interface.
+dependencies:
+  nfc:
+    path: ../toit-nfc
