@@ -1,3 +1,5 @@
 dependencies:
   mifare-ultralight:
     path: ..
+  pn53x:
+    path: ../../toit-pn53x

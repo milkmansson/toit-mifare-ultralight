@@ -1,9 +1,17 @@
 prefixes:
   mifare-ultralight: toit-mifare-ultralight
+  pn53x: toit-pn53x
 packages:
+  toit-des:
+    path: ../../toit-des
   toit-mifare-ultralight:
     path: ..
     prefixes:
+      des: toit-des
       nfc: toit-nfc
   toit-nfc:
     path: ../../toit-nfc
+  toit-pn53x:
+    path: ../../toit-pn53x
+    prefixes:
+      nfc: toit-nfc
